@@ -20,6 +20,7 @@
 #include <sched.h>
 #include <time.h>
 #include <stdlib.h>
+#include <sys/sysinfo.h>
 
 #define NUM_THREADS		4
 #define START_SERVICE 		0
@@ -97,9 +98,11 @@ int main (int argc, char *argv[])
      printf("unsafe mutex will be created\n");
    }
 
-   print_scheduler();
    rc=sched_getparam(getpid(), &nrt_param);
+   //print_scheduler();
 
+
+   numberOfProcessors = get_nprocs();
 
    CPU_ZERO(&threadcpu);
    coreid=0;
@@ -113,10 +116,11 @@ int main (int argc, char *argv[])
    pthread_attr_setinheritsched(&rt_sched_attr, PTHREAD_EXPLICIT_SCHED);
    pthread_attr_setschedpolicy(&rt_sched_attr, SCHED_FIFO);
    pthread_attr_setaffinity_np(&rt_sched_attr, sizeof(cpu_set_t), &threadcpu);
+   print_scheduler();
 
    pthread_attr_init(&nrt_sched_attr);
-   pthread_attr_setinheritsched(&rt_sched_attr, PTHREAD_EXPLICIT_SCHED);
-   pthread_attr_setschedpolicy(&rt_sched_attr, SCHED_RR);
+   pthread_attr_setinheritsched(&nrt_sched_attr, PTHREAD_EXPLICIT_SCHED);
+   pthread_attr_setschedpolicy(&nrt_sched_attr, SCHED_RR);
    //pthread_attr_setschedpolicy(&rt_sched_attr, SCHED_OTHER);
 
 
@@ -139,8 +143,8 @@ int main (int argc, char *argv[])
 
    pthread_mutex_init(&sharedMemSem, NULL);
 
-   // Set priority lower than H and M, but just a bit higher than L
-   rt_param.sched_priority = rt_min_prio+1;
+   // Set priority to maximum for start service
+   rt_param.sched_priority = rt_max_prio;
    pthread_attr_setschedparam(&rt_sched_attr, &rt_param);
 
    printf("\nCreating RT thread %d\n", START_SERVICE);
@@ -188,14 +192,14 @@ void *startService(void *threadid)
    rt_param.sched_priority = rt_min_prio;
    pthread_attr_setschedparam(&rt_sched_attr, &rt_param);
 
-   printf("\nCreating Low Prio RT or BE thread %d\n", LOW_PRIO_SERVICE);
+   printf("\nCreating Low Prio RT thread %d\n", LOW_PRIO_SERVICE);
    threadParams[LOW_PRIO_SERVICE].threadIdx=LOW_PRIO_SERVICE;
 
    // Real-time option
-   //rc = pthread_create(&threads[LOW_PRIO_SERVICE], &rt_sched_attr, criticalSectionTask, (void *)&threadParams[LOW_PRIO_SERVICE]);
+   rc = pthread_create(&threads[LOW_PRIO_SERVICE], &rt_sched_attr, criticalSectionTask, (void *)&threadParams[LOW_PRIO_SERVICE]);
 
    // Non-real-time option
-   rc = pthread_create(&threads[LOW_PRIO_SERVICE], &nrt_sched_attr, criticalSectionTask, (void *)&threadParams[LOW_PRIO_SERVICE]);
+   //rc = pthread_create(&threads[LOW_PRIO_SERVICE], &nrt_sched_attr, criticalSectionTask, (void *)&threadParams[LOW_PRIO_SERVICE]);
 
    if (rc)
    {
@@ -212,8 +216,8 @@ void *startService(void *threadid)
    while(CScnt < 1)
    {
        busyWaitCnt++; 
-       if((busyWaitCnt % 10000) == 0) {printf(".");};
-       //if((busyWaitCnt % 10) == 0) {sleep(1); printf(".");};
+       //if((busyWaitCnt % 10000) == 0) {printf(".");};
+       if((busyWaitCnt % 10) == 0) {sleep(1); printf(".");};
    }
    printf("CScnt=%d\n", CScnt);
 
@@ -222,7 +226,7 @@ void *startService(void *threadid)
    // CREATE H Thread as RT thread at highest priority, but it will block on C.S. semaphore held by L until
    // L finishes the C.S.
    //
-   rt_param.sched_priority = rt_max_prio;
+   rt_param.sched_priority = rt_max_prio-1;
    pthread_attr_setschedparam(&rt_sched_attr, &rt_param);
 
 
@@ -248,7 +252,7 @@ void *startService(void *threadid)
    //
    if(runInterference > 0)
    {
-       rt_param.sched_priority = rt_max_prio-1;
+       rt_param.sched_priority = rt_max_prio-2;
        pthread_attr_setschedparam(&rt_sched_attr, &rt_param);
 
        printf("\nCreating RT thread %d\n", MID_PRIO_SERVICE);
