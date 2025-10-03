@@ -27,10 +27,11 @@
 #define HIGH_PRIO_SERVICE 	1
 #define MID_PRIO_SERVICE 	2
 #define LOW_PRIO_SERVICE 	3
-#define CS_LENGTH 		100
+#define CS_LENGTH 		20
 
 pthread_t threads[NUM_THREADS];
 pthread_attr_t rt_sched_attr;
+pthread_attr_t rt_sched_attr_m;  // Separate attribute for M thread
 pthread_attr_t nrt_sched_attr;
 int rt_max_prio, rt_min_prio;
 struct sched_param rt_param;
@@ -103,14 +104,16 @@ int main (int argc, char *argv[])
 
 
    numberOfProcessors = get_nprocs();
+   printf("Number of processors: %d\n", numberOfProcessors);
 
+   // Default affinity for H and L threads (core 0)
    CPU_ZERO(&threadcpu);
    coreid=0;
-   printf("Setting thread %d to core %d\n", i, coreid);
+   printf("Setting H & L threads to core %d\n", coreid);
    CPU_SET(coreid, &threadcpu);
    for(i=0; i<numberOfProcessors; i++)
        if(CPU_ISSET(i, &threadcpu))  printf(" CPU-%d ", i);
-   printf("\nLaunching thread %d\n", i);
+   printf("\n");
 
    pthread_attr_init(&rt_sched_attr);
    pthread_attr_setinheritsched(&rt_sched_attr, PTHREAD_EXPLICIT_SCHED);
@@ -122,6 +125,19 @@ int main (int argc, char *argv[])
    pthread_attr_setinheritsched(&nrt_sched_attr, PTHREAD_EXPLICIT_SCHED);
    pthread_attr_setschedpolicy(&nrt_sched_attr, SCHED_RR);
    //pthread_attr_setschedpolicy(&rt_sched_attr, SCHED_OTHER);
+
+   // Setup separate attribute for M thread on different core
+   pthread_attr_init(&rt_sched_attr_m);
+   pthread_attr_setinheritsched(&rt_sched_attr_m, PTHREAD_EXPLICIT_SCHED);
+   pthread_attr_setschedpolicy(&rt_sched_attr_m, SCHED_FIFO);
+   
+   // Set M thread to core 1 (if available), otherwise core 0
+   cpu_set_t threadcpu_m;
+   CPU_ZERO(&threadcpu_m);
+   int m_coreid = (numberOfProcessors > 1) ? 1 : 0;
+   printf("Setting M thread to core %d\n", m_coreid);
+   CPU_SET(m_coreid, &threadcpu_m);
+   pthread_attr_setaffinity_np(&rt_sched_attr_m, sizeof(cpu_set_t), &threadcpu_m);
 
 
    if (rc) 
@@ -253,11 +269,11 @@ void *startService(void *threadid)
    if(runInterference > 0)
    {
        rt_param.sched_priority = rt_max_prio-2;
-       pthread_attr_setschedparam(&rt_sched_attr, &rt_param);
+       pthread_attr_setschedparam(&rt_sched_attr_m, &rt_param);
 
-       printf("\nCreating RT thread %d\n", MID_PRIO_SERVICE);
+       printf("\nCreating RT thread %d on different core\n", MID_PRIO_SERVICE);
        threadParams[MID_PRIO_SERVICE].threadIdx=MID_PRIO_SERVICE;
-       rc = pthread_create(&threads[MID_PRIO_SERVICE], &rt_sched_attr, simpleTask, (void *)&threadParams[MID_PRIO_SERVICE]);
+       rc = pthread_create(&threads[MID_PRIO_SERVICE], &rt_sched_attr_m, simpleTask, (void *)&threadParams[MID_PRIO_SERVICE]);
 
        if (rc)
        {
