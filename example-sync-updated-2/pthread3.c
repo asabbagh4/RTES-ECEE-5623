@@ -27,7 +27,7 @@
 #define HIGH_PRIO_SERVICE 	1
 #define MID_PRIO_SERVICE 	2
 #define LOW_PRIO_SERVICE 	3
-#define CS_LENGTH 		10
+#define CS_LENGTH 		100
 
 pthread_t threads[NUM_THREADS];
 pthread_attr_t rt_sched_attr;
@@ -58,7 +58,7 @@ int numberOfProcessors;
 struct timespec timeNow, timeStartTest;
 
 unsigned const int fibLength = 47;  // if number is too large, unsigned will overflow
-unsigned const int fibComputeSequences = 100000;   // to add more time, increase iterations
+unsigned const int fibComputeSequences = 200000;   // to add more time, increase iterations
 
 // Helper functions
 void fibCycleBurner(unsigned seqCnt, unsigned iterCnt, int traceOn);
@@ -217,7 +217,7 @@ void *startService(void *threadid)
    {
        busyWaitCnt++; 
        //if((busyWaitCnt % 10000) == 0) {printf(".");};
-       if((busyWaitCnt % 10) == 0) {sleep(1); printf(".");};
+       if((busyWaitCnt % 100000) == 0) {usleep(10000); printf(".");};
    }
    printf("CScnt=%d\n", CScnt);
 
