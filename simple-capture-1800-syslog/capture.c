@@ -56,11 +56,12 @@
 #define CAPTURE_FRAMES (1800+LAST_FRAMES)
 #define FRAMES_TO_ACQUIRE (CAPTURE_FRAMES + START_UP_FRAMES + LAST_FRAMES)
 
-//#define FRAMES_PER_SEC (1) 
-//#define FRAMES_PER_SEC (10) 
+//#define FRAMES_PER_SEC (1)
+//#define FRAMES_PER_SEC (3) 
+#define FRAMES_PER_SEC (10) 
 //#define FRAMES_PER_SEC (20) 
 //#define FRAMES_PER_SEC (25) 
-#define FRAMES_PER_SEC (30) 
+//#define FRAMES_PER_SEC (30) 
 
 #define COLOR_CONVERT_RGB
 #define DUMP_FRAMES
@@ -124,14 +125,13 @@ static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec 
 {
     int written, i, total, dumpfd;
    
-    snprintf(&ppm_dumpname[11], 9, "%04d", tag);
-    strncat(&ppm_dumpname[15], ".ppm", 5);
+    snprintf(&ppm_dumpname[11], 9, "%04d.ppm", tag);
     dumpfd = open(ppm_dumpname, O_WRONLY | O_NONBLOCK | O_CREAT, 00666);
 
     snprintf(&ppm_header[4], 11, "%010d", (int)time->tv_sec);
-    strncat(&ppm_header[14], " sec ", 5);
+    snprintf(&ppm_header[14], 6, " sec ");
     snprintf(&ppm_header[19], 11, "%010d", (int)((time->tv_nsec)/1000000));
-    strncat(&ppm_header[29], " msec \n"HRES_STR" "VRES_STR"\n255\n", 19);
+    snprintf(&ppm_header[29], 20, " msec \n"HRES_STR" "VRES_STR"\n255\n");
 
     // subtract 1 from sizeof header because it includes the null terminator for the string
     written=write(dumpfd, ppm_header, sizeof(ppm_header)-1);
@@ -146,7 +146,8 @@ static void dump_ppm(const void *p, int size, unsigned int tag, struct timespec 
 
     clock_gettime(CLOCK_MONOTONIC, &time_now);
     fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-    //printf("Frame written to flash at %lf, %d, bytes\n", (fnow-fstart), total);
+    printf("  [WRITE] Frame %04d written to %s (%d bytes) at %.3lf sec\n", 
+           tag, ppm_dumpname, total, (fnow-fstart));
 
     close(dumpfd);
     
@@ -160,14 +161,13 @@ static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec 
 {
     int written, i, total, dumpfd;
    
-    snprintf(&pgm_dumpname[11], 9, "%04d", tag);
-    strncat(&pgm_dumpname[15], ".pgm", 5);
+    snprintf(&pgm_dumpname[11], 9, "%04d.pgm", tag);
     dumpfd = open(pgm_dumpname, O_WRONLY | O_NONBLOCK | O_CREAT, 00666);
 
     snprintf(&pgm_header[4], 11, "%010d", (int)time->tv_sec);
-    strncat(&pgm_header[14], " sec ", 5);
+    snprintf(&pgm_header[14], 6, " sec ");
     snprintf(&pgm_header[19], 11, "%010d", (int)((time->tv_nsec)/1000000));
-    strncat(&pgm_header[29], " msec \n"HRES_STR" "VRES_STR"\n255\n", 19);
+    snprintf(&pgm_header[29], 20, " msec \n"HRES_STR" "VRES_STR"\n255\n");
 
     // subtract 1 from sizeof header because it includes the null terminator for the string
     written=write(dumpfd, pgm_header, sizeof(pgm_header)-1);
@@ -182,7 +182,8 @@ static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec 
 
     clock_gettime(CLOCK_MONOTONIC, &time_now);
     fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-    //printf("Frame written to flash at %lf, %d, bytes\n", (fnow-fstart), total);
+    printf("  [WRITE] Frame %04d written to %s (%d bytes) at %.3lf sec\n", 
+           tag, pgm_dumpname, total, (fnow-fstart));
 
     close(dumpfd);
     
@@ -266,12 +267,24 @@ static void process_image(const void *p, int size)
     clock_gettime(CLOCK_REALTIME, &frame_time);    
 
     framecnt++;
-    //printf("frame %d: ", framecnt);
     
     if(framecnt == 0) 
     {
         clock_gettime(CLOCK_MONOTONIC, &time_start);
         fstart = (double)time_start.tv_sec + (double)time_start.tv_nsec / 1000000000.0;
+        printf("\n[START] Beginning frame capture (after %d startup frames)\n", START_UP_FRAMES);
+    }
+    
+    if(framecnt > -1)
+    {
+        clock_gettime(CLOCK_MONOTONIC, &time_now);
+        fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
+        printf("[CAPTURE] Frame %04d captured at %.3lf sec (%.2lf FPS avg)\n", 
+               framecnt, (fnow-fstart), (double)(framecnt+1) / (fnow-fstart));
+    }
+    else
+    {
+        printf("[STARTUP] Skipping frame %d/%d\n", framecnt + START_UP_FRAMES + 1, START_UP_FRAMES);
     }
 
 #ifdef DUMP_FRAMES	
@@ -282,8 +295,8 @@ static void process_image(const void *p, int size)
 
     if(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_GREY)
     {
-        printf("Dump graymap as-is size %d\n", size);
-        dump_pgm(p, size, framecnt, &frame_time);
+        if(framecnt > -1)
+            dump_pgm(p, size, framecnt, &frame_time);
     }
 
     else if(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_YUYV)
@@ -308,7 +321,6 @@ static void process_image(const void *p, int size)
         if(framecnt > -1) 
         {
             dump_ppm(bigbuffer, ((size*6)/4), framecnt, &frame_time);
-            //printf("Dump YUYV converted to RGB size %d\n", size);
         }
 #else
       
@@ -325,7 +337,6 @@ static void process_image(const void *p, int size)
         if(framecnt > -1)
         {
             dump_pgm(bigbuffer, (size/2), framecnt, &frame_time);
-            //printf("Dump YUYV converted to YY size %d\n", size);
         }
 #endif
 
@@ -334,12 +345,13 @@ static void process_image(const void *p, int size)
 
     else if(fmt.fmt.pix.pixelformat == V4L2_PIX_FMT_RGB24)
     {
-        printf("Dump RGB as-is size %d\n", size);
-        dump_ppm(p, size, framecnt, &frame_time);
+        if(framecnt > -1)
+            dump_ppm(p, size, framecnt, &frame_time);
     }
     else
     {
-        printf("ERROR - unknown dump format\n");
+        if(framecnt == -8)
+            printf("[ERROR] Unknown pixel format\n");
     }
 
 #endif
@@ -527,16 +539,15 @@ static void mainloop(void)
                     perror("nanosleep");
                 else
 		{
-		    if(framecnt > 1)
+		    if(framecnt > 0)
 	            {	
 		        clock_gettime(CLOCK_MONOTONIC, &time_now);
 		        fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-                        //printf("REPLACE read at %lf, @ %lf FPS\n", (fnow-fstart), (double)(framecnt+1) / (fnow-fstart));
-                        syslog(LOG_CRIT, "SIMPCAP: read at %lf, @ %lf FPS\n", (fnow-fstart), (double)(framecnt+1) / (fnow-fstart));
-		    }
-		    else 
-		    {
-                        printf("at %lf\n", fnow);
+                        double current_fps = (double)(framecnt+1) / (fnow-fstart);
+                        printf("[READ] Frame read complete at %.3lf sec | Avg rate: %.2lf FPS | Target: %d FPS\n", 
+                               (fnow-fstart), current_fps, FRAMES_PER_SEC);
+                        syslog(LOG_CRIT, "SIMPCAP: Frame %d read at %.3lf sec @ %.2lf FPS\n", 
+                               framecnt, (fnow-fstart), current_fps);
 		    }
 		}
 
@@ -553,7 +564,8 @@ static void mainloop(void)
 
     clock_gettime(CLOCK_MONOTONIC, &time_stop);
     fstop = (double)time_stop.tv_sec + (double)time_stop.tv_nsec / 1000000000.0;
-
+    
+    printf("\n[COMPLETE] Frame capture loop finished\n");
 }
 
 static void stop_capturing(void)
@@ -589,7 +601,6 @@ static void start_capturing(void)
         case IO_METHOD_MMAP:
                 for (i = 0; i < n_buffers; ++i) 
                 {
-                        printf("allocated buffer %d\n", i);
                         struct v4l2_buffer buf;
 
                         CLEAR(buf);
@@ -603,6 +614,10 @@ static void start_capturing(void)
                 type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
                 if (-1 == xioctl(fd, VIDIOC_STREAMON, &type))
                         errno_exit("VIDIOC_STREAMON");
+                printf("[INIT] Allocated %d MMAP buffers\n", n_buffers);
+                printf("[INIT] Streaming started, waiting for camera to stabilize...\n");
+                sleep(1);  // Give camera time to start streaming
+                printf("[INIT] Camera ready\n");
                 break;
 
         case IO_METHOD_USERPTR:
@@ -858,7 +873,7 @@ static void init_device(void)
 
     if (force_format)
     {
-        printf("FORCING FORMAT\n");
+        printf("[INIT] Setting video format to %dx%d\n", HRES, VRES);
         fmt.fmt.pix.width       = HRES;
         fmt.fmt.pix.height      = VRES;
 
@@ -884,11 +899,14 @@ static void init_device(void)
     }
     else
     {
-        printf("ASSUMING FORMAT\n");
+        printf("[INIT] Using device default format\n");
         /* Preserve original settings as set by v4l2-ctl for example */
         if (-1 == xioctl(fd, VIDIOC_G_FMT, &fmt))
                     errno_exit("VIDIOC_G_FMT");
     }
+    
+    printf("[INIT] Video format: %dx%d, pixel format: 0x%x\n", 
+           fmt.fmt.pix.width, fmt.fmt.pix.height, fmt.fmt.pix.pixelformat);
 
     /* Buggy driver paranoia. */
     min = fmt.fmt.pix.width * 2;
@@ -982,11 +1000,11 @@ long_options[] = {
 
 int main(int argc, char **argv)
 {
-    if(argc > 1)
-        dev_name = argv[1];
-    else
-        dev_name = "/dev/video0";
-
+    dev_name = "/dev/video0";
+    
+    printf("\n========================================\n");
+    printf("   Video Capture Program v1.3\n");
+    printf("========================================\n\n");
 
     for (;;)
     {
@@ -1045,6 +1063,10 @@ int main(int argc, char **argv)
         }
     }
 
+    printf("[INIT] Opening device: %s\n", dev_name);
+    printf("[INIT] Target frames: %d (plus %d startup frames)\n", frame_count - START_UP_FRAMES - LAST_FRAMES, START_UP_FRAMES);
+    printf("[INIT] Target frame rate: %d FPS\n\n", FRAMES_PER_SEC);
+    
     // initialization of V4L2
     open_device();
     init_device();
@@ -1057,11 +1079,24 @@ int main(int argc, char **argv)
     // shutdown of frame acquisition service
     stop_capturing();
 
-    printf("Total capture time=%lf, for %d frames, %lf FPS\n", (fstop-fstart), CAPTURE_FRAMES+1, ((double)CAPTURE_FRAMES / (fstop-fstart)));
+    // Calculate actual frames captured after startup frames
+    // framecnt starts at -START_UP_FRAMES and counts up
+    // Real saved frames start at framecnt=0
+    int actual_frames = (framecnt >= 0) ? (framecnt + 1) : 0;
+    double actual_fps = ((double)actual_frames / (fstop-fstart));
+    
+    printf("\n========================================\n");
+    printf("   CAPTURE SUMMARY\n");
+    printf("========================================\n");
+    printf("Total frames captured: %d\n", actual_frames);
+    printf("Total capture time: %.3lf seconds\n", (fstop-fstart));
+    printf("Average frame rate: %.2lf FPS\n", actual_fps);
+    printf("Target frame rate: %d FPS\n", FRAMES_PER_SEC);
+    printf("Performance: %.1lf%% of target\n", (actual_fps / FRAMES_PER_SEC) * 100.0);
+    printf("========================================\n\n");
 
     uninit_device();
     close_device();
-    fprintf(stderr, "\n");
     return 0;
 }
 
