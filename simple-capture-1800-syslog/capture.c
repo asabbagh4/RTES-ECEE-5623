@@ -9,19 +9,20 @@
  *
  *  ARCHITECTURE:
  *    Reader Thread (High Priority) -> Message Queue -> Writer Thread (Low Priority)
- *         Acquires @ 10 FPS              Passes           Writes @ ~3 FPS
- *                                    buffer indices       (300ms delay)
+ *         Acquires @ 10 FPS           Passes buffer         Writes @ ~3.3 FPS
+ *                                      indices              (3x slower)
  *
  *  KEY CONCEPTS DEMONSTRATED:
  *    1. Reader doesn't wait for disk I/O (decoupled operation)
  *    2. Message queue provides bounded buffer between threads
- *    3. Zero-copy: only buffer index is passed, not frame data
+ *    3. Zero-copy: only buffer index passed, not frame data
  *    4. Real-time priorities ensure reader gets CPU time first
  *
  *  Based on V4L2 API example code - http://linuxtv.org/docs.php
  *
  */
 
+#define _GNU_SOURCE
 
 #include <syslog.h>
 
@@ -46,6 +47,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <mqueue.h>
+#include <sched.h>
 
 /*
  * ============================================================================
@@ -67,7 +69,7 @@
 // Message Queue Configuration - enables inter-thread communication
 #define FRAME_MQ "/frame_mq"            // POSIX message queue name (must start with /)
 #define MAX_MSG_SIZE (sizeof(frame_msg_t))  // Message holds frame metadata only
-#define MAX_QUEUE_DEPTH (10)            // Max messages queued (bounded buffer)
+#define MAX_QUEUE_DEPTH (200)            // Max messages queued (bounded buffer)
 
 // Format is used by a number of functions, so made as a file global
 static struct v4l2_format fmt;
@@ -79,15 +81,14 @@ struct buffer
 };
 
 /*
- * ============================================================================
- * MESSAGE QUEUE AND ZERO-COPY BUFFER MANAGEMENT
- * ============================================================================
- * CONCEPT: Instead of copying entire frame data through message queue,
- *          we pass only a small index. Writer accesses frame via shared memory.
- * BENEFIT: Avoids expensive memory copies, improves performance
+ * Zero copy buffer
+ * We will avoid copying entire frame data through message queue
+ * Reader thread will acquire frames and store it in memory
+ * Writer thread will write it to disk
+ * The pointer is transferred through message queue
  */
 
-// Message structure - only metadata, NOT the actual frame data
+// Message structure - only metadata
 typedef struct
 {
     int frame_number;       // Sequential frame number (for tracking)
@@ -97,8 +98,8 @@ typedef struct
 } frame_msg_t;
 
 // Global buffer pool - SHARED MEMORY between reader and writer threads
-#define NUM_FRAME_BUFFERS 10000    // Pool size: more buffers = more decoupling
-unsigned char frame_buffers[NUM_FRAME_BUFFERS][1280*960];  // Oversized for any frame
+#define NUM_FRAME_BUFFERS 200    // 20 buffers = ~6MB (smaller pool, writer is fast)
+unsigned char frame_buffers[NUM_FRAME_BUFFERS][640*480];  // Sized for grayscale frames
 int buffer_in_use[NUM_FRAME_BUFFERS] = {0};                // 0=free, 1=in-use
 pthread_mutex_t buffer_mutex = PTHREAD_MUTEX_INITIALIZER;  // Protects buffer allocation
 
@@ -106,15 +107,13 @@ static char            *dev_name = "/dev/video0";
 static int              fd = -1;
 struct buffer          *buffers;
 static unsigned int     n_buffers;
-static int              frame_count = 100;  // Default, will be set by command line
+static int              frame_count = 180;  // Default, will be set by command line
 
-static double fnow=0.0, fstart=0.0, fstop=0.0;
-static struct timespec time_now, time_start, time_stop;
+static double fnow=0.0, fstart=0.0, fstop=0.0, fstop_writer=0.0;
+static struct timespec time_now, time_start, time_stop, time_stop_writer;
 
 /*
- * ============================================================================
- * THREADING AND SYNCHRONIZATION GLOBALS
- * ============================================================================
+ Threading and synchronization globals
  */
 
 // Thread handles and scheduling attributes
@@ -126,7 +125,7 @@ struct sched_param reader_param, writer_param;       // Scheduling parameters (p
 mqd_t frame_mq;                                      // Message queue descriptor
 struct mq_attr mq_attr;                              // Message queue attributes
 
-// Shared counters - MUST be protected by mutex due to concurrent access
+// Shared counters - MUST be protected by mutex to avoid race condition
 int frames_read = 0;                                 // Incremented by reader
 int frames_written = 0;                              // Incremented by writer
 pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;  // Protects counters
@@ -181,17 +180,15 @@ static void dump_pgm(const void *p, int size, unsigned int tag, struct timespec 
 
     clock_gettime(CLOCK_MONOTONIC, &time_now);
     fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
-    printf("  [WRITE] Frame %04d written to %s (%d bytes) at %.3lf sec\n", 
-           tag, pgm_dumpname, total, (fnow-fstart));
+    //printf("  [WRITE] Frame %04d written to %s (%d bytes) at %.3lf sec\n", 
+    //      tag, pgm_dumpname, total, (fnow-fstart));
 
     close(dumpfd);
     
 }
 
 /*
- * ============================================================================
- * FRAME PROCESSING - READER THREAD LOGIC
- * ============================================================================
+ Frame processing
  */
 
 // Frame counter: starts at -8 to skip camera stabilization frames
@@ -224,7 +221,7 @@ static void process_image(const void *p, int size)
         clock_gettime(CLOCK_MONOTONIC, &time_start);
         fstart = (double)time_start.tv_sec + (double)time_start.tv_nsec / 1000000000.0;
         printf("\n[START] Beginning frame capture (after %d startup frames)\n", START_UP_FRAMES);
-        syslog(LOG_CRIT, "SIMPCAP: Frame capture started");
+        syslog(LOG_CRIT, "Simple-Capture: Frame capture started");
     }
     
     if(framecnt > -1)
@@ -232,6 +229,8 @@ static void process_image(const void *p, int size)
         clock_gettime(CLOCK_MONOTONIC, &time_now);
         fnow = (double)time_now.tv_sec + (double)time_now.tv_nsec / 1000000000.0;
         printf("[READER] Frame %04d acquired at %.3lf sec (%.2lf FPS avg)\n", 
+               framecnt, (fnow-fstart), (double)(framecnt+1) / (fnow-fstart));
+        syslog(LOG_INFO, "Simple-Capture: Frame %04d acquired at %.3lf sec (%.2lf FPS avg)", 
                framecnt, (fnow-fstart), (double)(framecnt+1) / (fnow-fstart));
     }
     else
@@ -257,7 +256,6 @@ static void process_image(const void *p, int size)
     if(buf_idx == -1)
     {
         // Buffer pool exhausted - writer can't keep up!
-        // In a real system, you'd increase pool size or slow down reader
         printf("[READER] WARNING: No free buffers, skipping frame %d\n", framecnt);
         return;
     }
@@ -284,7 +282,7 @@ static void process_image(const void *p, int size)
     }
 
     // INTER-THREAD COMMUNICATION: Send message to writer via queue
-    // IMPORTANT: We send only the INDEX (4 bytes), not frame data (307KB)!
+    // IMPORTANT: We send only the INDEX (small), not frame data
     msg.frame_number = framecnt;
     msg.buffer_index = buf_idx;         // ZERO-COPY: just the index
     msg.size = newsize;
@@ -347,7 +345,7 @@ static int read_frame(void)
  * FUNCTION: writer_thread_func()
  * PURPOSE: Receives frame buffer indices from queue and writes to disk
  * KEY CONCEPT: Runs at LOW priority, slower than reader, doesn't block reader
- * DEMONSTRATION: 300ms delay shows writer is 3x slower than 10 FPS acquisition
+ * DEMONSTRATION: Writer is 3x slower than reader to show decoupling
  */
 void *writer_thread_func(void *arg)
 {
@@ -361,10 +359,10 @@ void *writer_thread_func(void *arg)
     // Reader period: 100ms (10 FPS)
     // Writer period: 300ms (3.3 FPS) - demonstrates decoupling!
     write_delay.tv_sec = 0;
-    write_delay.tv_nsec = 300000000;  // 300ms delay per frame
+    write_delay.tv_nsec = (1000000000 / FRAMES_PER_SEC) * 3;  // 3x reader period
     
     printf("[WRITER] Thread started\n");
-    syslog(LOG_CRIT, "SIMPCAP: Writer thread started");
+    syslog(LOG_CRIT, "Simple-Capture: Writer thread started");
 
     // WRITER MAIN LOOP: Process messages until reader finishes AND queue empty
     while(1)
@@ -396,7 +394,7 @@ void *writer_thread_func(void *arg)
         
         consecutive_empty = 0;  // Reset counter - we got a message
         
-        // SIMULATE SLOW I/O: Add 300ms delay BEFORE writing
+        // SIMULATE SLOW I/O: Add delay BEFORE writing (3x slower than reader)
         // This demonstrates that reader doesn't wait for this delay!
         nanosleep(&write_delay, NULL);
         
@@ -416,16 +414,19 @@ void *writer_thread_func(void *arg)
         
         printf("[WRITER] Frame %04d written | Written: %d, Read: %d\n", 
                msg.frame_number, frames_written, frames_read);
+        syslog(LOG_INFO, "Simple-Capture: Frame %04d written | Written: %d, Read: %d", 
+               msg.frame_number, frames_written, frames_read);
     }
+    
+    // Capture end time for accurate write FPS calculation
+    clock_gettime(CLOCK_MONOTONIC, &time_stop_writer);
+    fstop_writer = (double)time_stop_writer.tv_sec + (double)time_stop_writer.tv_nsec / 1000000000.0;
     
     printf("[WRITER] Thread exiting\n");
     return NULL;
 }
 
 /*
- * ============================================================================
- * READER THREAD - DEMONSTRATES FAST ACQUISITION WITHOUT I/O BLOCKING
- * ============================================================================
  * FUNCTION: reader_thread_func()
  * PURPOSE: Acquires frames from camera at 10 FPS, processes, sends to queue
  * KEY CONCEPT: Runs at HIGH priority, never waits for disk I/O
@@ -497,6 +498,10 @@ void *reader_thread_func(void *arg)
     // SHUTDOWN COORDINATION: Tell writer we're done
     shutdown_requested = 1;  // Writer checks this flag
     
+    // Capture end time for accurate read FPS calculation
+    clock_gettime(CLOCK_MONOTONIC, &time_stop);
+    fstop = (double)time_stop.tv_sec + (double)time_stop.tv_nsec / 1000000000.0;
+    
     printf("[READER] Thread completed, acquired %d frames\n", frames_read);
     
     return NULL;  // Thread exits, writer continues draining queue
@@ -525,12 +530,12 @@ static void mainloop(void)
     rt_max_prio = sched_get_priority_max(SCHED_FIFO);
     rt_min_prio = sched_get_priority_min(SCHED_FIFO);
     
-    printf("\n[INIT] Setting up message queue and threads\n");
+    printf("[INIT] Setting up message queue and threads\n");
     printf("[INIT] RT Priority range: %d (min) to %d (max)\n", rt_min_prio, rt_max_prio);
     
     // MESSAGE QUEUE SETUP: Configure bounded buffer between threads
     mq_attr.mq_maxmsg = MAX_QUEUE_DEPTH;    // Max 10 messages queued
-    mq_attr.mq_msgsize = MAX_MSG_SIZE;      // Each message is small (32 bytes)
+    mq_attr.mq_msgsize = MAX_MSG_SIZE;      // Each message is small (~32 bytes)
     mq_attr.mq_flags = 0;                   // Blocking mode
     
     // Clean up any leftover queue from previous run
@@ -547,20 +552,33 @@ static void mainloop(void)
     }
     printf("[INIT] Message queue created: %s (depth=%d, msgsize=%ld)\n", 
            FRAME_MQ, MAX_QUEUE_DEPTH, MAX_MSG_SIZE);
+
     
     // READER THREAD CONFIGURATION: High priority ensures it gets CPU first
     rc = pthread_attr_init(&reader_attr);
     rc = pthread_attr_setinheritsched(&reader_attr, PTHREAD_EXPLICIT_SCHED);
     rc = pthread_attr_setschedpolicy(&reader_attr, SCHED_FIFO);  // Real-time FIFO
-    reader_param.sched_priority = rt_max_prio - 1;  // Priority 98 (very high)
+    reader_param.sched_priority = rt_max_prio - 1; // priority 98
     pthread_attr_setschedparam(&reader_attr, &reader_param);
+
+    // Pin reader to CPU 0
+    cpu_set_t reader_cpuset;
+    CPU_ZERO(&reader_cpuset);
+    CPU_SET(0, &reader_cpuset);  // Use CPU core 0
+    pthread_attr_setaffinity_np(&reader_attr, sizeof(cpu_set_t), &reader_cpuset);
     
     // WRITER THREAD CONFIGURATION: Low priority means it runs when reader idle
     rc = pthread_attr_init(&writer_attr);
     rc = pthread_attr_setinheritsched(&writer_attr, PTHREAD_EXPLICIT_SCHED);
     rc = pthread_attr_setschedpolicy(&writer_attr, SCHED_FIFO);  // Real-time FIFO
-    writer_param.sched_priority = rt_min_prio;      // Priority 1 (very low)
+    writer_param.sched_priority = rt_max_prio - 2;      //priority 97
     pthread_attr_setschedparam(&writer_attr, &writer_param);
+
+    // Pin writer to CPU 1
+    cpu_set_t writer_cpuset;
+    CPU_ZERO(&writer_cpuset);
+    CPU_SET(1, &writer_cpuset);  // Use CPU core 1
+    pthread_attr_setaffinity_np(&writer_attr, sizeof(cpu_set_t), &writer_cpuset);
     
     // CREATE WRITER THREAD FIRST: Consumer should be ready before producer
     if((rc = pthread_create(&writer_thread, &writer_attr, writer_thread_func, NULL)) != 0)
@@ -589,8 +607,8 @@ static void mainloop(void)
     }
     
     printf("\n[THREADS] Both threads started, acquisition in progress...\n");
-    printf("[INFO] Reader: %d FPS, Writer: ~3x slower (demonstrates decoupling)\n", 
-           FRAMES_PER_SEC);
+    printf("[INFO] Reader: %d FPS, Writer: ~%.1f FPS (3x slower demonstrates decoupling)\n", 
+           FRAMES_PER_SEC, (double)FRAMES_PER_SEC / 3.0);
     printf("[INFO] Watch reader acquire while writer is still writing previous frames!\n\n");
     
     // THREAD JOIN: Wait for reader to finish its work
@@ -599,25 +617,10 @@ static void mainloop(void)
     
     // QUEUE DRAINING: Writer needs time to process remaining buffered frames
     printf("[MAIN] Reader finished, waiting for writer to drain queue...\n");
-    
-    // Monitor progress - writer continues after reader exits
-    int wait_count = 0;
-    while(frames_written < frames_read && wait_count < 600)  // Max 60 seconds
-    {
-        sleep(1);
-        wait_count++;
-        printf("[MAIN] Draining: %d/%d frames written\n", frames_written, frames_read);
-    }
-    
-    shutdown_requested = 1;  // Ensure writer knows it's time to exit
-    
+        
     // THREAD JOIN: Wait for writer to finish processing queue
     pthread_join(writer_thread, NULL);  // Blocks until writer returns
-    
-    // Get final timestamp for statistics
-    clock_gettime(CLOCK_MONOTONIC, &time_stop);
-    fstop = (double)time_stop.tv_sec + (double)time_stop.tv_nsec / 1000000000.0;
-    
+        
     // CLEANUP: Close and remove message queue
     mq_close(frame_mq);     // Close our descriptor
     mq_unlink(FRAME_MQ);    // Remove queue from system
@@ -891,13 +894,14 @@ int main(int argc, char **argv)
     frame_count += START_UP_FRAMES;
 
     // Open system log for timestamped events
-    openlog("SIMPCAP", LOG_PID | LOG_CONS, LOG_USER);
+    openlog("Simple-Capture:", LOG_PID | LOG_CONS, LOG_USER);
     
     printf("[INIT] Opening device: %s\n", dev_name);
     printf("[INIT] Target frames: %d (plus %d startup frames)\n", 
            frame_count - START_UP_FRAMES, START_UP_FRAMES);
     printf("[INIT] Acquisition rate: %d FPS\n", FRAMES_PER_SEC);
-    printf("[INIT] Write delay: 300ms (demonstrates 3x slower than acquisition)\n\n");
+    printf("[INIT] Writer delay: 3x slower than reader (demonstrates decoupling)\n");
+    printf("[INIT] Buffer pool size: %d frames (~6MB for efficient buffering)\n\n", NUM_FRAME_BUFFERS);
     
     // initialization of V4L2
     open_device();
@@ -919,9 +923,9 @@ int main(int argc, char **argv)
     }
     
     double write_rate = 0.0;
-    if(fstop > fstart)
+    if(fstop_writer > fstart)
     {
-        write_rate = (double)frames_written / (fstop - fstart);
+        write_rate = (double)frames_written / (fstop_writer - fstart);
     }
     
     /*
@@ -930,24 +934,21 @@ int main(int argc, char **argv)
      * ========================================================================
      * Look for these key indicators of successful decoupling:
      * 1. Read rate close to 10 FPS (shows reader not blocked by writer)
-     * 2. Write rate around 3 FPS (shows 300ms delay working)
+     * 2. Write rate around 3.3 FPS (shows 3x slower delay working)
      * 3. Ratio close to 3x (proves concurrent operation)
      */
     printf("\n============================================================\n");
-    printf("CAPTURE SUMMARY - DEMONSTRATES DECOUPLING SUCCESS\n");
+    printf("SUMMARY\n");
     printf("============================================================\n");
     printf("Frames read (acquired): %d\n", frames_read);
     printf("Frames written (saved): %d\n", frames_written);
-    printf("Total execution time:   %.3lf seconds\n", (fstop-fstart));
+    printf("Reader execution time:  %.3lf seconds\n", (fstop-fstart));
+    printf("Writer execution time:  %.3lf seconds\n", (fstop_writer-fstart));
     printf("------------------------------------------------------------\n");
     printf("Average read rate:      %.2lf FPS (target: %d FPS)\n", 
            actual_fps, FRAMES_PER_SEC);
-    printf("Average write rate:     %.2lf FPS (target: ~3 FPS)\n", write_rate);
-    printf("Write/Read ratio:       %.2lfx (proves 3x slower write!)\n", 
-           actual_fps / write_rate);
-    printf("------------------------------------------------------------\n");
-    printf("CONCLUSION: Reader acquired frames without waiting for disk I/O\n");
-    printf("============================================================\n\n");
+    printf("Average write rate:     %.2lf FPS (target: ~%.1f FPS)\n", 
+           write_rate, (double)FRAMES_PER_SEC / 3.0);
 
     // Cleanup V4L2 resources
     uninit_device();
