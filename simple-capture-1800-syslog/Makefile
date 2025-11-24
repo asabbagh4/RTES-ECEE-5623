@@ -4,7 +4,7 @@ CC=gcc
 
 CDEFS=
 CFLAGS= -O0 -g -Wcpp $(INCLUDE_DIRS) $(CDEFS)
-LIBS= -lrt
+LIBS= -lrt -lpthread
 
 HFILES= 
 CFILES= capture.c
