@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <strings.h>
 #include <string.h>
+#include <unistd.h>
 
 
 #define NSTRS 3
@@ -23,9 +24,7 @@ char *strs[NSTRS] = {
 extern int errno;
 extern void broken_pipe_handler();
 
-main(argc, argv)
-int argc;
-char **argv;
+int main(int argc, char **argv)
 {
   char c;
   FILE *fp;
