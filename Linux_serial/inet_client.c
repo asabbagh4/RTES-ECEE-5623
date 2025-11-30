@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <strings.h>
 #include <string.h>
+#include <unistd.h>
 
 
 #define NSTRS 3
@@ -15,21 +16,19 @@
 #define LOCAL_PORT 54321
 
 char *strs[NSTRS] = {
-	"This is the first client string.\n",
-	"This is the second client string.\n",
-	"This is the third client string.\n"
+	"This is the first client string to server.\n",
+	"This is the second client string to server.\n",
+	"This is the third client string to server.\n"
 };
 
 extern int errno;
 extern void broken_pipe_handler();
 
-main(argc, argv)
-int argc;
-char **argv;
+int main(int argc, char **argv)
 {
-  char c;
+  int c;
   FILE *fp;
-  int i, j, client_sock, len, num_sets;
+  int i, j, client_sock, num_sets;
   struct hostent *hp;
   struct sockaddr_in client_sockaddr;
   struct linger opt;
