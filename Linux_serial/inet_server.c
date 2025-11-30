@@ -1,20 +1,22 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <strings.h>
 #include <string.h>
+#include <unistd.h>
 
 #define NSTRS 3
 #define DEFAULT_PORT 54321
 
 char *test_strs[NSTRS] = {
-	"This is the first server string.\n",
-	"This is the second server string.\n",
-	"This is the third server string.\n"
+	"This is the first server string to client.\n",
+	"This is the second server string to client.\n",
+	"This is the third server string client.\n"
 };
 
 extern int errno;
@@ -22,13 +24,14 @@ extern void int_handler();
 extern void broken_pipe_handler();
 extern void serve_clients();
 
+//socket descriptors
 static int server_sock, client_sock;
 static int fromlen, i, j, num_sets;
 static char c;
 static FILE *fp;
 static struct sockaddr_in server_sockaddr, client_sockaddr;
 
-main()
+int main()
 {
   char hostname[64];
   struct hostent *hp;
@@ -52,7 +55,7 @@ main()
   bzero((char*) &server_sockaddr, sizeof(server_sockaddr));
   server_sockaddr.sin_family = AF_INET;
   server_sockaddr.sin_port = htons(DEFAULT_PORT);
-  bcopy (hp->h_addr, &server_sockaddr.sin_addr, hp->h_length);
+  inet_pton(AF_INET, "192.168.50.190", &server_sockaddr.sin_addr);
 
   /* Bind address to the socket */
   if(bind(server_sock, (struct sockaddr *) &server_sockaddr,
