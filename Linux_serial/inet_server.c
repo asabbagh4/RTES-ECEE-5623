@@ -14,9 +14,9 @@
 #define DEFAULT_PORT 54321
 
 char *test_strs[NSTRS] = {
-	"This is the first server string to client.\n",
-	"This is the second server string to client.\n",
-	"This is the third server string client.\n"
+	"SERVER -> CLIENT 1.\n",
+	"SERVER -> CLIENT 2.\n",
+	"SERVER -> CLIENT 3.\n"
 };
 
 extern int errno;
@@ -99,6 +99,10 @@ void serve_clients()
       perror("Server: listen");
       exit(-1);
     }
+    
+    char ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &server_sockaddr.sin_addr, ip_str, INET_ADDRSTRLEN);
+    printf("Server listening on %s:%d\n", ip_str, ntohs(server_sockaddr.sin_port));
 
     /* Accept connections */
     if((client_sock=accept(server_sock, 

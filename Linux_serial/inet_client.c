@@ -16,9 +16,9 @@
 #define LOCAL_PORT 54321
 
 char *strs[NSTRS] = {
-	"This is the first client string.\n",
-	"This is the second client string.\n",
-	"This is the third client string.\n"
+	"CLIENT -> SERVER 1.\n",
+	"CLIENT -> SERVER 2.\n",
+	"CLIENT -> SERVER 3.\n"
 };
 
 extern int errno;
@@ -104,6 +104,9 @@ int main(int argc, char **argv)
 
   }
 
+  /* Give server time to receive all data before closing */
+  usleep(100000);  /* 100ms delay */
+  
   close(client_sock);
 
   exit(0);
