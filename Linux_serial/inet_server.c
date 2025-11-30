@@ -123,15 +123,10 @@ void serve_clients()
       {
         while((c = fgetc(fp)) != EOF)
         {
-	  if(num_sets < 4)
-            putchar(c);
-
-          if(c=='\n')
-            break;
+	          if(num_sets < 4) putchar(c);
+            if(c=='\n') break;
         } /* end while */
-
       } /* end for NSTRS */
-
     } /* end for num_sets */
 
     close(client_sock);
