@@ -55,6 +55,9 @@ int main()
   bzero((char*) &server_sockaddr, sizeof(server_sockaddr));
   server_sockaddr.sin_family = AF_INET;
   server_sockaddr.sin_port = htons(DEFAULT_PORT);
+  //bind with localhost. useful for testing on a single machine
+  //inet_pton(AF_INET, "127.0.0.1", &server_sockaddr.sin_addr);
+  //bind to IP address on the netework
   inet_pton(AF_INET, "192.168.50.190", &server_sockaddr.sin_addr);
 
   /* Bind address to the socket */
@@ -123,8 +126,8 @@ void serve_clients()
       {
         while((c = fgetc(fp)) != EOF)
         {
-	          if(num_sets < 4) putchar(c);
-            if(c=='\n') break;
+          putchar(c);
+          if(c=='\n') break;
         } /* end while */
       } /* end for NSTRS */
     } /* end for num_sets */
